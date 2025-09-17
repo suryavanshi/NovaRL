@@ -1,0 +1,8 @@
+mode: sync
+experiment:
+  batch_size: 4
+  horizon: 4
+  observation_dim: 8
+  action_dim: 4
+  total_iterations: 5
+  learning_rate: 0.003
