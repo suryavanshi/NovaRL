@@ -27,23 +27,38 @@ class TrajectoryBatch:
         self._validate_shapes()
 
     def _validate_shapes(self) -> None:
-        shapes = {
-            "observations": self.observations.shape,
-            "actions": self.actions.shape,
-            "log_probs": self.log_probs.shape,
-            "rewards": self.rewards.shape,
-            "dones": self.dones.shape,
-            "values": self.values.shape,
-            "advantages": self.advantages.shape,
-            "returns": self.returns.shape,
-        }
-        unique_shapes = set(shapes.values())
-        if len(unique_shapes) != 1:
-            raise ValueError(f"Mismatched trajectory shapes: {shapes}")
         if self.observations.dim() < 2:
             raise ValueError(
                 "TrajectoryBatch expects time-major tensors with at least 2 dimensions"
             )
+        time_steps = self.observations.shape[0]
+        tensors = {
+            "actions": self.actions,
+            "log_probs": self.log_probs,
+            "rewards": self.rewards,
+            "dones": self.dones,
+            "values": self.values,
+            "advantages": self.advantages,
+            "returns": self.returns,
+        }
+        for name, tensor in tensors.items():
+            if tensor.dim() < 1:
+                raise ValueError(f"Tensor '{name}' must have at least one dimension")
+            if tensor.shape[0] != time_steps:
+                raise ValueError(
+                    f"Tensor '{name}' has mismatched time dimension: {tensor.shape[0]} vs {time_steps}"
+                )
+        if self.observations.dim() >= 3:
+            batch_size = self.observations.shape[1]
+            for name, tensor in tensors.items():
+                if tensor.dim() < 2:
+                    raise ValueError(
+                        f"Tensor '{name}' must include batch dimension when observations are time-major"
+                    )
+                if tensor.shape[1] != batch_size:
+                    raise ValueError(
+                        f"Tensor '{name}' has mismatched batch dimension: {tensor.shape[1]} vs {batch_size}"
+                    )
 
     @property
     def horizon(self) -> int:
