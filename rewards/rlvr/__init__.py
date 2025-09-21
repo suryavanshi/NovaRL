@@ -1,8 +1,7 @@
-"""Reward modules."""
+"""Verifiable reward utilities."""
 
-from .fake.basic import IdentityRewardManager, NoisyRewardManager
-from .rlvr.manager import VerifiableRewardManager
-from .rlvr.signals import (
+from .manager import VerifiableRewardManager
+from .signals import (
     HFRewardModelSignal,
     HTTPRewardModelSignal,
     MathAnswerSignal,
@@ -12,8 +11,6 @@ from .rlvr.signals import (
 )
 
 __all__ = [
-    "IdentityRewardManager",
-    "NoisyRewardManager",
     "VerifiableRewardManager",
     "VerifiableSignal",
     "RegexMatchSignal",
@@ -22,3 +19,4 @@ __all__ = [
     "HFRewardModelSignal",
     "HTTPRewardModelSignal",
 ]
+
