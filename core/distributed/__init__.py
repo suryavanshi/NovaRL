@@ -1,18 +1,15 @@
-"""Core utilities for NovaRL."""
+"""Distributed training helpers."""
 
-from .distributed import (  # noqa: F401
-    DeepSpeedZeROConfig,
-    FSDPStrategyPreset,
+from .deepspeed import DeepSpeedZeROConfig
+from .fsdp import FSDPStrategyPreset, get_default_fsdp_preset
+from .megatron import (
     MegatronAdapter,
     MegatronAdapterConfig,
     MegatronAdapterRegistry,
     NullMegatronAdapter,
-    get_default_fsdp_preset,
 )
-from .types import TrajectoryBatch
 
 __all__ = [
-    "TrajectoryBatch",
     "DeepSpeedZeROConfig",
     "FSDPStrategyPreset",
     "MegatronAdapter",

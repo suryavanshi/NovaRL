@@ -16,6 +16,9 @@ NovaRL targets Python 3.10+ and PyTorch 2.x. Clone the repository and install it
 
 ```bash
 pip install -e .
+
+# Large-scale language model extras (FSDP/DeepSpeed)
+pip install -e .[llm]
 ```
 
 ### Running the toy PPO example
@@ -76,6 +79,26 @@ NovaRL ships with unit tests under `tests/`. Run them with:
 ```bash
 pytest
 ```
+
+## Large language model fine-tuning presets
+
+NovaRL ships with launcher scripts that wrap Hugging Face's `Trainer` to fine-tune 7B
+class language models on 4–8 GPUs using either native PyTorch FSDP or DeepSpeed
+ZeRO. The presets enable gradient checkpointing, bf16 training, and optimizer state
+sharding out of the box while exposing toggles for CPU offload and precision control.
+
+- `scripts/launch_fsdp.sh` – launches an FSDP-backed run. Gradient checkpointing and
+  bf16 are enabled by default with optional CPU offload via `CPU_OFFLOAD=1`.
+- `scripts/launch_zero3.sh` – launches a DeepSpeed ZeRO stage 2 or 3 run. Enable
+  optimizer or parameter offloading through `OPTIMIZER_OFFLOAD=1` and
+  `PARAM_OFFLOAD=1`. Set `ZERO_STAGE=2` to switch to a ZeRO-2 preset.
+
+Both scripts accept the standard Hugging Face dataset arguments (`DATASET_NAME`,
+`DATASET_CONFIG`, `TEXT_FIELD`, etc.) and call into
+[`scripts/finetune_hf.py`](scripts/finetune_hf.py), which exposes the shared
+fine-tuning workflow. The DeepSpeed launch script relies on JSON presets stored
+under [`configs/deepspeed/`](configs/deepspeed), regenerating a custom
+configuration automatically when offload or sharding settings are overridden.
 
 ## Contributing
 

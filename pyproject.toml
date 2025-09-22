@@ -23,6 +23,12 @@ dev = [
     "black>=23.9",
     "ruff>=0.1.6",
 ]
+llm = [
+    "transformers>=4.36",
+    "datasets>=2.14",
+    "accelerate>=0.24",
+    "deepspeed>=0.10",
+]
 
 [tool.black]
 line-length = 100
