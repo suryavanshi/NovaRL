@@ -7,6 +7,7 @@ from omegaconf import DictConfig
 
 from examples.minimal_ppo_sync import ExperimentConfig
 from examples.minimal_ppo_sync import main as run_sync_example
+from examples.ppo_async import AsyncExperimentConfig, run_async_training
 
 logger = logging.getLogger(__name__)
 
@@ -18,9 +19,8 @@ def main(cfg: DictConfig) -> None:
         exp_cfg = ExperimentConfig(**cfg.get("experiment", {}))
         run_sync_example(exp_cfg)
     elif mode == "async":
-        logger.warning("Async mode is not yet implemented; falling back to sync example.")
-        exp_cfg = ExperimentConfig(**cfg.get("experiment", {}))
-        run_sync_example(exp_cfg)
+        exp_cfg = AsyncExperimentConfig(**cfg.get("experiment", {}))
+        run_async_training(exp_cfg)
     else:
         raise ValueError(f"Unsupported trainer mode: {mode}")
 

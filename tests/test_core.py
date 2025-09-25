@@ -2,21 +2,20 @@ from __future__ import annotations
 
 import pytest
 
-torch = pytest.importorskip("torch")
-from torch import nn
-
+from core.buffers import DataBuffer
 from core.buffers.memory import TrajectoryBuffer
 from core.types import TrajectoryBatch
 from engines.sync.sync_engine import SynchronousRolloutEngine
 from envs.prompt.toy import ToyPromptEnvironment
 from rewards.fake.basic import IdentityRewardManager
 
+torch = pytest.importorskip("torch")
 
-class DummyPolicy(nn.Module):
+class DummyPolicy(torch.nn.Module):
     def __init__(self, observation_dim: int, action_dim: int) -> None:
         super().__init__()
-        self.linear = nn.Linear(observation_dim, action_dim)
-        self.value = nn.Linear(observation_dim, 1)
+        self.linear = torch.nn.Linear(observation_dim, action_dim)
+        self.value = torch.nn.Linear(observation_dim, 1)
 
     def forward(self, observations: torch.Tensor) -> dict[str, torch.Tensor]:
         logits = self.linear(observations)
@@ -65,6 +64,25 @@ def test_buffer_concat() -> None:
     buffer.put(batch2)
     combined = buffer.get()
     assert combined.horizon == batch1.horizon + batch2.horizon
+
+
+def test_data_buffer_get_many() -> None:
+    buffer = DataBuffer(capacity=4)
+    batch1 = make_batch()
+    batch2 = make_batch()
+    buffer.put(batch1)
+    buffer.put(batch2)
+    items = buffer.get_many(min_items=2, max_items=2)
+    assert len(items) == 2
+    assert items[0] is batch1
+    assert items[1] is batch2
+
+
+def test_data_buffer_close_rejects_put() -> None:
+    buffer = DataBuffer(capacity=1)
+    buffer.close()
+    with pytest.raises(RuntimeError):
+        buffer.put(make_batch())
 
 
 def test_rollout_engine_generates_batch() -> None:
