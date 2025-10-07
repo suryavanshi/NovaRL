@@ -8,7 +8,7 @@ from torch.distributions import Categorical
 
 from core.interfaces import RolloutEngine
 from core.types import TrajectoryBatch
-from core.utils.stats import compute_gae
+from core.utils.advantages import AdvantageEstimator, GAEAdvantageEstimator
 from rewards.base import RewardManagerBase
 
 
@@ -24,6 +24,7 @@ class SynchronousRolloutEngine(RolloutEngine):
         gamma: float = 0.99,
         lam: float = 0.95,
         device: Optional[torch.device] = None,
+        advantage_estimator: AdvantageEstimator | None = None,
     ) -> None:
         self.env = env
         self.policy = policy
@@ -32,6 +33,9 @@ class SynchronousRolloutEngine(RolloutEngine):
         self.gamma = gamma
         self.lam = lam
         self.device = device or torch.device("cpu")
+        self.advantage_estimator = advantage_estimator or GAEAdvantageEstimator(
+            gamma=gamma, lam=lam
+        )
 
     def generate(self, batch: Optional[TrajectoryBatch] = None) -> TrajectoryBatch:
         del batch  # Unused in the synchronous implementation.
@@ -73,16 +77,15 @@ class SynchronousRolloutEngine(RolloutEngine):
         rewards_tensor = torch.stack(rewards, dim=0)
         dones_tensor = torch.stack(dones, dim=0)
         values_tensor = torch.stack(values, dim=0)
-        bootstrap_values = torch.cat([values_tensor, final_value.unsqueeze(0)], dim=0)
 
-        advantages = compute_gae(
+        advantage_estimate = self.advantage_estimator.estimate(
             rewards=rewards_tensor,
-            values=bootstrap_values,
+            values=values_tensor,
             dones=dones_tensor,
-            gamma=self.gamma,
-            lam=self.lam,
+            bootstrap_value=final_value,
         )
-        returns = advantages + values_tensor
+        advantages = advantage_estimate.advantages
+        returns = advantage_estimate.returns
 
         return TrajectoryBatch(
             observations=observations_tensor,

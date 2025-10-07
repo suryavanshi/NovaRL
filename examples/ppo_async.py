@@ -48,6 +48,8 @@ class AsyncExperimentConfig:
     buffer_capacity: int = 8
     min_batches_per_update: int = 2
     weight_sync_interval: int = 4
+    weight_sync_max_staleness: int | None = None
+    weight_sync_timeout_s: float = 0.0
     staleness_window: int = 50
     queue_timeout_s: float = 30.0
     colocate_rollouts: bool = True
@@ -80,6 +82,37 @@ class StampedBatch:
     batch: TrajectoryBatch
     policy_version: int
     created_at: float
+
+
+@dataclass(slots=True)
+class WeightSyncCadence:
+    interval: int
+    max_staleness: int | None = None
+    timeout_s: float = 0.0
+
+
+class WeightSyncController:
+    def __init__(self, cadence: WeightSyncCadence) -> None:
+        if cadence.interval <= 0:
+            raise ValueError("Weight sync interval must be positive")
+        self.cadence = cadence
+        self._last_sync_step = 0
+        self._last_sync_time = time.monotonic()
+
+    def should_sync(self, current_step: int, staleness_samples: Sequence[int]) -> bool:
+        if current_step - self._last_sync_step >= self.cadence.interval:
+            return True
+        if self.cadence.max_staleness is not None and staleness_samples:
+            if max(staleness_samples) >= self.cadence.max_staleness:
+                return True
+        if self.cadence.timeout_s > 0:
+            if time.monotonic() - self._last_sync_time >= self.cadence.timeout_s:
+                return True
+        return False
+
+    def mark_synced(self, step: int) -> None:
+        self._last_sync_step = step
+        self._last_sync_time = time.monotonic()
 
 
 def _seed_all(seed: int, *, deterministic: bool = False) -> None:
@@ -318,6 +351,14 @@ def run_async_training(cfg: AsyncExperimentConfig) -> None:
     reward_logger = process_loggers["reward"]
     system_logger = process_loggers["system"]
 
+    sync_controller = WeightSyncController(
+        WeightSyncCadence(
+            interval=max(cfg.weight_sync_interval, 1),
+            max_staleness=cfg.weight_sync_max_staleness,
+            timeout_s=max(cfg.weight_sync_timeout_s, 0.0),
+        )
+    )
+
     def _spawn_worker(worker_id: int, initial_state: dict[str, torch.Tensor]) -> mp.Process:
         proc = ctx.Process(
             target=_rollout_worker,
@@ -361,9 +402,11 @@ def run_async_training(cfg: AsyncExperimentConfig) -> None:
         if torch.cuda.is_available() and cuda_state is not None:
             torch.cuda.set_rng_state_all(cuda_state)  # type: ignore[arg-type]
         system_logger.log({"resume_step": float(updates)})
+        sync_controller.mark_synced(policy_version)
 
     if workers:
         _maybe_broadcast_weights(policy, weight_queues, version=policy_version)
+        sync_controller.mark_synced(policy_version)
 
     for item in resume_buffer:
         data_queue.put(item)
@@ -447,7 +490,10 @@ def run_async_training(cfg: AsyncExperimentConfig) -> None:
                         logger.warning("worker %d died; restarting", idx)
                         system_logger.log({"worker_restart": float(idx)})
                         workers[idx] = _spawn_worker(idx, _policy_state_dict(policy))
-                        _maybe_broadcast_weights(policy, [weight_queues[idx]], version=policy_version)
+                        _maybe_broadcast_weights(
+                            policy, [weight_queues[idx]], version=policy_version
+                        )
+                        sync_controller.mark_synced(policy_version)
 
             if resume_buffer:
                 items = resume_buffer
@@ -481,8 +527,9 @@ def run_async_training(cfg: AsyncExperimentConfig) -> None:
                 _save_replay(Path(cfg.dump_replay), items)
                 dump_written = True
 
-            if updates % cfg.weight_sync_interval == 0:
+            if sync_controller.should_sync(updates, staleness):
                 _maybe_broadcast_weights(policy, weight_queues, version=updates)
+                sync_controller.mark_synced(updates)
                 policy_version = updates
 
             if cfg.checkpoint_interval > 0 and updates % cfg.checkpoint_interval == 0:

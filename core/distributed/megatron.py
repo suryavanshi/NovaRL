@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, MutableMapping, Optional, Protocol, Sequence, Tuple
 
+from .moe import ParallelLayout
+
 
 @dataclass(slots=True)
 class MegatronAdapterConfig:
@@ -19,6 +21,23 @@ class MegatronAdapterConfig:
     gradient_checkpointing: bool = True
     moe_aux_loss_coeff: float = 0.01
     use_flash_attention: bool = True
+
+    def parallel_layout(self, world_size: Optional[int] = None) -> ParallelLayout:
+        if world_size is None:
+            layout = ParallelLayout(
+                data_parallel_size=1,
+                tensor_parallel_size=self.tensor_parallel_size,
+                pipeline_parallel_size=self.pipeline_parallel_size,
+                expert_parallel_size=self.expert_parallel_size,
+            )
+            layout.validate()
+            return layout
+        return ParallelLayout.from_world_size(
+            total_world_size=world_size,
+            tensor_parallel_size=self.tensor_parallel_size,
+            pipeline_parallel_size=self.pipeline_parallel_size,
+            expert_parallel_size=self.expert_parallel_size,
+        )
 
 
 class MegatronAdapter(Protocol):
@@ -61,11 +80,8 @@ class NullMegatronAdapter:
         return None
 
     def configure_distributed_strategy(self) -> Mapping[str, Any]:
-        return {
-            "tensor_parallel_size": self.config.tensor_parallel_size,
-            "pipeline_parallel_size": self.config.pipeline_parallel_size,
-            "expert_parallel_size": self.config.expert_parallel_size,
-        }
+        layout = self.config.parallel_layout()
+        return layout.megatron_kwargs()
 
     def build_train_dataloader(self) -> Iterable[Any]:  # pragma: no cover - trivial container
         return []
