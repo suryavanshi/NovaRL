@@ -2,12 +2,24 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 from torch import nn
 
 from algos.ppo.trainer import PPOTrainer
 from core.buffers.memory import TrajectoryBuffer
+from core.monitoring import (
+    CodeEvalTask,
+    KLDriftAlarm,
+    MathEvalTask,
+    PeriodicEvalHook,
+    RewardHackingSentinel,
+    ScriptedAgentFactory,
+    VerbalEvalTask,
+    render_html_trace,
+    render_text_trace,
+)
 from core.utils.timing import RateTracker
 from engines.sync.sync_engine import SynchronousRolloutEngine
 from envs.prompt.toy import ToyPromptEnvironment
@@ -70,9 +82,61 @@ def main(cfg: ExperimentConfig | None = None) -> None:
     trainer = PPOTrainer(policy=policy, optimizer=optimizer)
     rate_tracker = RateTracker(window_seconds=30.0)
 
+    scripted_factory = ScriptedAgentFactory(
+        scripts=[
+            [
+                ("math evaluation", "Ready for math problems."),
+                ("2 + 3", "The answer is 5."),
+            ],
+            [
+                ("math evaluation", "Standing by for the next challenge."),
+                ("10 / 2", "Dividing gives 5."),
+            ],
+            [
+                ("math evaluation", "Prepared."),
+                ("7 * 4", "Seven times four equals 28."),
+            ],
+            [
+                ("coding assignment", "Ready to write code."),
+                (
+                    "square",
+                    "def square(x):\n    return x * x\n\n# simple helper",
+                ),
+                (
+                    "test this function",
+                    "I would call square(2) == 4 and square(-3) == 9.",
+                ),
+            ],
+            [
+                ("summarize", "Ready to summarize."),
+                (
+                    "Context:",
+                    "The returning mission brings discoveries and optimism for future missions.",
+                ),
+            ],
+        ],
+        loop=True,
+    )
+    eval_hook = PeriodicEvalHook(
+        tasks=[MathEvalTask(), CodeEvalTask(), VerbalEvalTask()],
+        agent_factory=scripted_factory,
+        frequency=5,
+        reward_sentinel=RewardHackingSentinel(
+            reward_threshold=0.2,
+            min_eval_score=0.6,
+        ),
+        kl_alarm=KLDriftAlarm(max_kl=0.2, max_reference_kl=0.2),
+    )
+    trace_dir = Path("traces")
+    trace_dir.mkdir(parents=True, exist_ok=True)
+
     total_episodes = 0
     for iteration in range(cfg.total_iterations):
         trajectories = rollout_engine.generate()
+        text_trace = render_text_trace(trajectories)
+        html_trace = render_html_trace(trajectories)
+        (trace_dir / f"iteration_{iteration:04d}.txt").write_text(text_trace)
+        (trace_dir / f"iteration_{iteration:04d}.html").write_text(html_trace)
         buffer.put(trajectories)
         batch = buffer.get()
         metrics = trainer.step(batch)
@@ -88,6 +152,13 @@ def main(cfg: ExperimentConfig | None = None) -> None:
             metrics["entropy"],
             eps_per_sec,
         )
+        eval_results, warnings = eval_hook.maybe_run(iteration, metrics)
+        for result in eval_results:
+            logging.info(
+                "eval name=%s score=%.2f passed=%s", result.name, result.score, result.passed
+            )
+        for warning in warnings:
+            logging.warning(warning)
 
     logging.info(
         "Finished training %d iterations over %d episodes",
