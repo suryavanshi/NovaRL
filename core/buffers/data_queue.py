@@ -143,6 +143,27 @@ class DataBuffer(Generic[T]):
                 except queue.Full:
                     pass
 
+    def snapshot(self) -> list[T]:
+        """Return a shallow copy of the buffer contents without consuming them."""
+
+        with self._lock:
+            drained: list[T] = []
+            sentinel_seen = False
+            while True:
+                try:
+                    item = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                if item is self._SENTINEL:
+                    sentinel_seen = True
+                    continue
+                drained.append(item)
+            for item in drained:
+                self._queue.put_nowait(item)
+            if sentinel_seen:
+                self._queue.put_nowait(self._SENTINEL)
+            return list(drained)
+
     def __len__(self) -> int:
         try:
             return int(self._queue.qsize())

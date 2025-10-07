@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import json
+import queue
+import time
+from pathlib import Path
+
 import pytest
 
 from core.buffers import DataBuffer
 from core.buffers.memory import TrajectoryBuffer
 from core.types import TrajectoryBatch
+from core.utils.logging import JsonlMetricsSink, MetricsAggregator, ProcessMetricsLogger
 from engines.sync.sync_engine import SynchronousRolloutEngine
 from envs.prompt.toy import ToyPromptEnvironment
 from rewards.fake.basic import IdentityRewardManager
@@ -85,6 +91,16 @@ def test_data_buffer_close_rejects_put() -> None:
         buffer.put(make_batch())
 
 
+def test_data_buffer_snapshot_roundtrip() -> None:
+    buffer: DataBuffer[int] = DataBuffer(capacity=4)
+    buffer.put(1)
+    buffer.put(2)
+    snapshot = buffer.snapshot()
+    assert snapshot == [1, 2]
+    assert buffer.get() == 1
+    assert buffer.get() == 2
+
+
 def test_rollout_engine_generates_batch() -> None:
     env = ToyPromptEnvironment(batch_size=2, observation_dim=4, action_dim=3, max_turns=2)
     policy = DummyPolicy(4, 3)
@@ -99,3 +115,19 @@ def test_rollout_engine_generates_batch() -> None:
     assert batch.observations.shape[0] == 2
     assert batch.actions.shape == batch.rewards.shape
     assert batch.completed_episodes() >= 0
+
+
+def test_metrics_aggregator_records_events(tmp_path: Path) -> None:
+    metrics_queue: queue.Queue = queue.Queue()
+    sink_path = tmp_path / "metrics.jsonl"
+    sink = JsonlMetricsSink(sink_path)
+    history = []
+    aggregator = MetricsAggregator(metrics_queue, sinks=[sink], history=history, poll_interval_s=0.1)
+    aggregator.start()
+    logger = ProcessMetricsLogger(metrics_queue, role="trainer")
+    logger.log({"loss": 1.0}, step=1)
+    time.sleep(0.2)
+    aggregator.stop()
+    assert history and history[0].metrics["loss"] == 1.0
+    content = sink_path.read_text().strip().splitlines()
+    assert content and json.loads(content[0])["metrics"]["loss"] == 1.0

@@ -7,7 +7,7 @@ NovaRL is a lightweight reinforcement learning sandbox focused on reinforcement 
 - **Composable interfaces** for environments, rollout engines, trainers, buffers, and reward managers.
 - **Synchronous PPO implementation** supporting both clipping and KL-penalty modes.
 - **Reference model utilities** for RLHF stabilization, including automatic frozen copies and optional weight-tied references.
-- **Simple timing, logging, and checkpoint helpers** to make toy experiments easy to reproduce.
+- **Structured logging with optional JSON, TensorBoard, and W&B sinks** plus resilient checkpoints and resume scripts.
 - **Examples that run in minutes**, including a tiny single-turn RLHF set-up.
 
 ## Getting started
