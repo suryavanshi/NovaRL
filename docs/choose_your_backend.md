@@ -40,6 +40,10 @@ should consider when scaling PPO-style reinforcement learning pipelines.
 - **Megatron-style tensor parallelism**: Combine with RL policies that reuse
   inference-time tensor-parallel checkpoints (e.g. Llama or Falcon). Integrate
   with vLLM for serving by exporting shard metadata alongside weights.
+- **Megatron/DeepSpeed MoE**: Use `core.distributed.ParallelLayout` to lock in
+  compatible DP/TP/PP/EP factors and `MoERouterConfig` to emit the matching
+  DeepSpeed or Megatron router stanza.  This avoids mismatched expert parallel
+  groups when scaling Mixtral-style policies.
 
 ## Throughput vs. Memory Rule of Thumb
 

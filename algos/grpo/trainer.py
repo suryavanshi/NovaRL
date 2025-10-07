@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import dataclass
 from typing import Mapping, Optional, Union
 
 import torch
@@ -13,17 +14,25 @@ from core.types import TrajectoryBatch
 from core.utils.advantages import normalize_advantages
 
 
-class PPOTrainer(Trainer):
-    """A minimal PPO implementation suitable for toy examples."""
+@dataclass(slots=True)
+class GRPOGroupingConfig:
+    """Configuration describing how completions are grouped for GRPO."""
+
+    group_size: int = 1
+    drop_incomplete_groups: bool = True
+
+
+class GRPOTrainer(Trainer):
+    """Implementation of Group Relative Policy Optimization."""
 
     def __init__(
         self,
         policy: nn.Module,
         optimizer: torch.optim.Optimizer,
-        clip_range: float = 0.2,
+        grouping: Optional[GRPOGroupingConfig] = None,
         value_coef: float = 0.5,
         entropy_coef: float = 0.01,
-        max_grad_norm: float = 1.0,
+        max_grad_norm: Optional[float] = 1.0,
         kl_coef: float = 0.0,
         adaptive_kl: bool = False,
         kl_target: float = 0.01,
@@ -32,7 +41,7 @@ class PPOTrainer(Trainer):
     ) -> None:
         self.policy = policy
         self.optimizer = optimizer
-        self.clip_range = clip_range
+        self.grouping = grouping or GRPOGroupingConfig()
         self.value_coef = value_coef
         self.entropy_coef = entropy_coef
         self.max_grad_norm = max_grad_norm
@@ -40,7 +49,6 @@ class PPOTrainer(Trainer):
         self.adaptive_kl = adaptive_kl
         self.kl_target = kl_target
         self.kl_adaptation_speed = kl_adaptation_speed
-
         self.reference_model = self._setup_reference_model(reference_model)
 
     def step(self, batch: TrajectoryBatch) -> Mapping[str, float]:
@@ -48,32 +56,27 @@ class PPOTrainer(Trainer):
         flat = batch.flatten()
         observations = flat.observations
         actions = flat.actions.long()
-        old_log_probs = flat.log_probs
-        advantages = flat.advantages
         returns = flat.returns
 
-        advantages = normalize_advantages(advantages)
-
-        outputs = self.policy(observations)
-        logits = outputs["logits"]
-        values = outputs["value"].squeeze(-1)
+        policy_out = self.policy(observations)
+        logits = policy_out["logits"]
+        values = policy_out.get("value")
+        value_predictions = None
+        if values is not None:
+            value_predictions = values.squeeze(-1)
         dist = Categorical(logits=logits)
         log_probs = dist.log_prob(actions)
         entropy = dist.entropy().mean()
 
-        ratio = torch.exp(log_probs - old_log_probs)
-        surr1 = ratio * advantages
-        if self.clip_range is not None and self.clip_range > 0:
-            clipped_ratio = torch.clamp(ratio, 1.0 - self.clip_range, 1.0 + self.clip_range)
-            surr2 = clipped_ratio * advantages
-            pg_objective = torch.min(surr1, surr2)
-            clip_fraction = (torch.abs(ratio - 1.0) > self.clip_range).float().mean()
-        else:
-            pg_objective = surr1
-            clip_fraction = torch.tensor(0.0, device=pg_objective.device)
-        policy_loss = -pg_objective.mean()
+        advantages = self._group_relative_advantages(returns)
+        norm_advantages = normalize_advantages(advantages)
 
-        value_loss = F.mse_loss(values, returns)
+        policy_loss = -(log_probs * norm_advantages.detach()).mean()
+
+        value_loss = torch.tensor(0.0, device=observations.device)
+        if value_predictions is not None:
+            value_loss = F.mse_loss(value_predictions, returns)
+
         kl_penalty = torch.tensor(0.0, device=observations.device)
         ref_kl = torch.tensor(0.0, device=observations.device)
         if self.reference_model is not None:
@@ -93,25 +96,45 @@ class PPOTrainer(Trainer):
             torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
         self.optimizer.step()
 
-        approx_kl = torch.mean(old_log_probs - log_probs).clamp_min(0).item()
         if self.adaptive_kl and self.reference_model is not None and ref_kl.item() > 0:
             self._update_kl_coef(float(ref_kl.item()))
-        clip_fraction_value = float(clip_fraction.item())
 
         metrics = {
             "loss": float(loss.item()),
             "policy_loss": float(policy_loss.item()),
             "value_loss": float(value_loss.item()),
             "entropy": float(entropy.item()),
-            "kl": float(approx_kl),
-            "policy_objective": float(pg_objective.mean().item()),
-            "kl_to_ref": float(ref_kl.item()),
+            "kl": float(ref_kl.item()),
             "kl_coef": float(self.kl_coef),
             "kl_penalty": float(kl_penalty.item()),
-            "clip_fraction": clip_fraction_value,
             "reward_mean": float(flat.rewards.mean().item()),
+            "advantage_norm": float(norm_advantages.mean().abs().item()),
         }
         return metrics
+
+    def _group_relative_advantages(self, returns: torch.Tensor) -> torch.Tensor:
+        group_size = max(int(self.grouping.group_size), 1)
+        if group_size == 1:
+            return returns - returns.mean()
+
+        total = returns.shape[0]
+        trimmed = (total // group_size) * group_size
+        grouped = returns[:trimmed].reshape(-1, group_size)
+        group_mean = grouped.mean(dim=1, keepdim=True)
+        adjusted = grouped - group_mean
+        if trimmed == total:
+            return adjusted.reshape(-1)
+
+        remainder = returns[trimmed:]
+        if self.grouping.drop_incomplete_groups:
+            return torch.cat([adjusted.reshape(-1), remainder - remainder.mean()], dim=0)
+        padding = group_size - remainder.shape[0]
+        padded = torch.cat([remainder, remainder.new_zeros(padding)], dim=0)
+        padded = padded.reshape(1, group_size)
+        pad_mean = padded.mean(dim=1, keepdim=True)
+        pad_adjusted = padded - pad_mean
+        pad_values = pad_adjusted.reshape(-1)[: remainder.shape[0]]
+        return torch.cat([adjusted.reshape(-1), pad_values], dim=0)
 
     def _setup_reference_model(
         self, reference_model: Optional[Union[nn.Module, str]]
@@ -121,9 +144,7 @@ class PPOTrainer(Trainer):
             if mode == "tie":
                 return self.policy
             if mode not in {"copy", "auto"}:
-                raise ValueError(
-                    "reference_model string must be 'copy', 'tie', or 'auto'"
-                )
+                raise ValueError("reference_model string must be 'copy', 'tie', or 'auto'")
             reference_model = None
         if reference_model is None:
             if self.kl_coef == 0 and not self.adaptive_kl:
@@ -148,5 +169,5 @@ class PPOTrainer(Trainer):
             self.kl_coef /= self.kl_adaptation_speed
 
 
+__all__ = ["GRPOTrainer", "GRPOGroupingConfig"]
 
-__all__ = ["PPOTrainer"]
